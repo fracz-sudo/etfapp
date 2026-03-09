@@ -3,7 +3,7 @@ const puppeteer = require('puppeteer');
 const path = require('path');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // ─── In-memory cache ────────────────────────────────────────────
 const cache = new Map();
@@ -28,16 +28,24 @@ let browserInstance = null;
 
 async function getBrowser() {
   if (!browserInstance || !browserInstance.connected) {
-    browserInstance = await puppeteer.launch({
-      headless: true,
+    const launchOptions = {
+      headless: 'new',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-blink-features=AutomationControlled',
         '--window-size=1920,1080',
+        '--disable-gpu',
       ],
-    });
+    };
+    
+    // Use system Chromium if provided by Render environment
+    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+      launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    }
+
+    browserInstance = await puppeteer.launch(launchOptions);
   }
   return browserInstance;
 }
