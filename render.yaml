@@ -2,7 +2,7 @@ services:
   - type: web
     name: etf-screener
     env: node
-    buildCommand: PUPPETEER_CACHE_DIR=/opt/render/project/puppeteer npm install
+    buildCommand: npm install
     startCommand: node server.js
     envVars:
       - key: NODE_VERSION

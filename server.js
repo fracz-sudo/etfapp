@@ -1,5 +1,6 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
+const chromium = require('@sparticuz/chromium');
 const path = require('path');
 
 const app = express();
@@ -28,20 +29,13 @@ let browserInstance = null;
 
 async function getBrowser() {
   if (!browserInstance || !browserInstance.connected) {
-    const launchOptions = {
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-blink-features=AutomationControlled',
-        '--window-size=1920,1080',
-        '--disable-gpu',
-      ],
-    };
-    
-    // Chromium paths are automatically resolved by Puppeteer when installed locally via buildCommand
-    browserInstance = await puppeteer.launch(launchOptions);
+    browserInstance = await puppeteer.launch({
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
+      ignoreHTTPSErrors: true,
+    });
   }
   return browserInstance;
 }
