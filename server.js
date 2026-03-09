@@ -40,11 +40,7 @@ async function getBrowser() {
       ],
     };
     
-    // Use system Chromium if provided by Render environment
-    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-      launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-    }
-
+    // Chromium paths are automatically resolved by Puppeteer when installed locally via buildCommand
     browserInstance = await puppeteer.launch(launchOptions);
   }
   return browserInstance;
