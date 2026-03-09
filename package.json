@@ -1,0 +1,14 @@
+{
+  "name": "etf-screener",
+  "version": "1.0.0",
+  "description": "ETF Screener - automatizovaný předvýběr ETF fondů z justetf.com",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "puppeteer": "^23.0.0"
+  }
+}
