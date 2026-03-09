@@ -2,8 +2,10 @@ services:
   - type: web
     name: etf-screener
     env: node
-    buildCommand: npx puppeteer browsers install chrome && npm install
+    buildCommand: PUPPETEER_CACHE_DIR=/opt/render/project/puppeteer npm install
     startCommand: node server.js
     envVars:
       - key: NODE_VERSION
         value: 20.x
+      - key: PUPPETEER_CACHE_DIR
+        value: /opt/render/project/puppeteer
