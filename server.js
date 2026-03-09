@@ -105,7 +105,7 @@ async function scrapeCategories() {
   }
 }
 
-// ─── Scrape ETF list from a category page ───────────────────────
+// ─── Scrape ETF list and details via API interception ───────────
 async function scrapeETFList(categoryUrl) {
   const cacheKey = `list:${categoryUrl}`;
   const cached = getCached(cacheKey);
@@ -113,14 +113,10 @@ async function scrapeETFList(categoryUrl) {
 
   const page = await newPage();
   try {
-    // Navigate to the category / search page
     let url = categoryUrl;
-    // If URL is a how-to guide, convert to search URL if needed
     if (url.includes('how-to/')) {
-      // Navigate to the guide and find the search link within
       await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
       await dismissCookies(page);
-      // Try to find a link to the search/screener
       const searchLink = await page.evaluate(() => {
         const el = document.querySelector('a[href*="/en/search.html"]');
         return el ? el.href : null;
@@ -130,91 +126,97 @@ async function scrapeETFList(categoryUrl) {
       }
     }
 
-    // If it's already a search page, navigate directly
-    if (url.includes('search.html')) {
-      await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-      await dismissCookies(page);
-    }
-
-    // Wait for the ETF table to load
-    await page.waitForSelector('table, .etf-table, [class*="table"]', { timeout: 15000 }).catch(() => {});
-    await new Promise((r) => setTimeout(r, 2000));
-
-    // Sort by fund size (AUM) descending – click on the fund size column header
-    try {
-      // Try clicking on AUM / Fund size column to sort
-      const sorted = await page.evaluate(() => {
-        const headers = Array.from(document.querySelectorAll('th, [role="columnheader"]'));
-        for (const h of headers) {
-          const text = h.textContent.toLowerCase();
-          if (text.includes('fund size') || text.includes('aum') || text.includes('fondgröße')) {
-            h.click();
-            return true;
+    // Set up network interception to catch the GraphQL / API response
+    let etfData = null;
+    page.on('response', async (response) => {
+      const resUrl = response.url();
+      if (resUrl.includes('/api/etfs') || resUrl.includes('search.html')) {
+        try {
+          const json = await response.json();
+          if (json && json.data && Array.isArray(json.data)) {
+            etfData = json.data;
+          } else if (Array.isArray(json)) {
+             etfData = json;
           }
+        } catch {
+          // Not a JSON response, ignore
         }
-        return false;
-      });
-      if (sorted) {
-        await new Promise((r) => setTimeout(r, 1500));
-        // Click again to ensure descending sort
-        await page.evaluate(() => {
-          const headers = Array.from(document.querySelectorAll('th, [role="columnheader"]'));
-          for (const h of headers) {
-            const text = h.textContent.toLowerCase();
-            if (text.includes('fund size') || text.includes('aum') || text.includes('fondgröße')) {
-              // Check if already descending, if not click again
-              const sortDir = h.getAttribute('aria-sort') || h.className;
-              if (!sortDir.includes('desc')) {
-                h.click();
-              }
-              return;
-            }
-          }
-        });
-        await new Promise((r) => setTimeout(r, 1500));
       }
-    } catch {
-      // Sorting didn't work – proceed with default order
-    }
-
-    // Extract ETF ISINs and basic data from the table
-    const etfList = await page.evaluate(() => {
-      const rows = [];
-      // Find ETF links with ISINs on the page
-      const etfLinks = document.querySelectorAll('a[href*="etf-profile.html?isin="]');
-      const seen = new Set();
-
-      etfLinks.forEach((link) => {
-        const href = link.getAttribute('href');
-        const isinMatch = href.match(/isin=([A-Z0-9]{12})/);
-        if (isinMatch && !seen.has(isinMatch[1])) {
-          const isin = isinMatch[1];
-          seen.add(isin);
-          const name = link.textContent.trim();
-
-          // Try to find AUM from parent row
-          let aum = '';
-          const row = link.closest('tr');
-          if (row) {
-            const cells = row.querySelectorAll('td');
-            cells.forEach((cell) => {
-              const text = cell.textContent.trim();
-              // Look for fund size pattern (number with m or bn)
-              if (text.match(/[\d,.]+\s*(m|bn)\b/i)) {
-                aum = text;
-              }
-            });
-          }
-
-          rows.push({ isin, name: name || isin, aum });
-        }
-      });
-
-      return rows;
     });
 
-    // Take first 6 (they should be sorted by AUM)
-    const top6 = etfList.slice(0, 6);
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+    await dismissCookies(page);
+    
+    // Fallback: If API interception didn't catch it, extract JSON from the page source variable
+    if (!etfData || etfData.length === 0) {
+      etfData = await page.evaluate(() => {
+        // justETF often embeds the initial list state in a script tag
+        const scripts = Array.from(document.querySelectorAll('script'));
+        for (const script of scripts) {
+          if (script.textContent.includes('window.vueData')) {
+             try {
+                const match = script.textContent.match(/window\.vueData\s*=\s*({.*});/);
+                if (match && match[1]) {
+                   const data = JSON.parse(match[1]);
+                   if (data && data.etfs) return data.etfs;
+                }
+             } catch(e) {}
+          }
+        }
+        
+        // If no JSON, fallback to scraping text from the DOM directly
+        const rows = document.querySelectorAll('.etf-table tbody tr');
+        return Array.from(rows).map(row => {
+           const link = row.querySelector('a[href*="isin="]');
+           const tds = row.querySelectorAll('td');
+           const val = (index) => tds[index] ? tds[index].textContent.trim() : 'N/A';
+           
+           if (!link) return null;
+           const isinMatch = link.href.match(/isin=([A-Z0-9]{12})/);
+           
+           return {
+              isin: isinMatch ? isinMatch[1] : 'N/A',
+              name: link.textContent.trim(),
+              ter: val(4) || 'N/A',
+              fundSize: val(5) || 'N/A'
+           };
+        }).filter(Boolean);
+      });
+    }
+
+    // Ensure we have data
+    if (!etfData || etfData.length === 0) return [];
+
+    // Sort by fund size (AUM) descending if possible
+    etfData.sort((a, b) => {
+      let aumA = a.fundSize || a.aum || 0;
+      let aumB = b.fundSize || b.aum || 0;
+      // parse '1,234 m' to number
+      const parseAum = (val) => {
+         if (typeof val === 'number') return val;
+         if (typeof val !== 'string') return 0;
+         let num = parseFloat(val.replace(/[^\d.]/g, ''));
+         if (val.toLowerCase().includes('bn')) num *= 1000;
+         return num;
+      };
+      return parseAum(aumB) - parseAum(aumA);
+    });
+
+    const top6 = etfData.slice(0, 6).map(etf => {
+       // Map to our expected format
+       return {
+          isin: etf.isin,
+          name: etf.name || etf.fundName || etf.isin,
+          ter: etf.ter || (etf.terRatio ? etf.terRatio + '%' : 'N/A'),
+          aum: etf.fundSize || etf.aum || 'N/A',
+          currency: etf.fundCurrency || etf.currency || 'N/A',
+          distribution: etf.distributionPolicy || etf.distribution || 'N/A',
+          replication: etf.replicationMethod || etf.replication || 'N/A',
+          kidAvailable: 'N/A (Nelze ověřit ze seznamu)',
+          description: etf.description || 'Detaily nebyly zjištěny ke zrychlení načítání.'
+       };
+    });
+
     setCache(cacheKey, top6);
     return top6;
   } finally {
@@ -373,39 +375,15 @@ app.get('/api/etfs', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Chybí parametr url.' });
     }
 
-    // Step 1: Get list of ETFs in category
+    // Get list of ETFs in category (now includes all details via API interception)
     const etfList = await scrapeETFList(categoryUrl);
     if (!etfList || etfList.length === 0) {
       return res.json({ success: true, data: [], message: 'V této kategorii nebyly nalezeny žádné ETF fondy.' });
     }
 
-    // Step 2: Get details for each ETF (up to 6)
-    const details = [];
-    for (const etf of etfList.slice(0, 6)) {
-      try {
-        const detail = await scrapeETFDetail(etf.isin);
-        // If name wasn't found on detail page, use name from list
-        if (!detail.name && etf.name) detail.name = etf.name;
-        // If AUM wasn't found on detail page, use from list
-        if (!detail.aum && etf.aum) detail.aum = etf.aum;
-        details.push(detail);
-      } catch (err) {
-        console.error(`Error fetching detail for ${etf.isin}:`, err.message);
-        details.push({
-          name: etf.name || etf.isin,
-          isin: etf.isin,
-          currency: 'N/A',
-          ter: 'N/A',
-          aum: etf.aum || 'N/A',
-          distribution: 'N/A',
-          replication: 'N/A',
-          kidAvailable: 'N/A',
-          description: 'Nepodařilo se načíst detaily.',
-        });
-      }
-    }
-
-    res.json({ success: true, data: details });
+    // Since scrapeETFList now extracts rich data, we can just return it instantly!
+    // We completely skip the 6x scrapeETFDetail calls which caused the 1-minute timeout on Render Free tier.
+    res.json({ success: true, data: etfList });
   } catch (err) {
     console.error('Error fetching ETFs:', err.message);
     res.status(500).json({ success: false, error: 'Nepodařilo se načíst ETF fondy. Zkuste to znovu.' });
